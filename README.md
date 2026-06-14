@@ -2,6 +2,9 @@
 
 An advanced AI-powered content automation workflow built with **n8n**. This workflow acts as an intelligent agent system that processes user requests for summarization, content creation, improvement, research, analysis, and general assistance. It uses Groq's LLM (Llama 3.3 70B), routes requests intelligently, and delivers polished responses via email.
 
+<img width="1197" height="514" alt="image" src="https://github.com/user-attachments/assets/a1938757-db40-4552-bd34-29b94027367b" />
+
+
 ## Features
 
 - **Webhook Trigger**: Accepts POST requests with user messages and optional content.
