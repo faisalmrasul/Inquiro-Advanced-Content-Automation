@@ -1,0 +1,773 @@
+{
+  "name": "Inquiro Advanced_Content_Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3ad39aa0-9904-453d-85a6-9b36058b86df",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        240
+      ],
+      "webhookId": "ai-agent-email-trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get incoming webhook items\nconst item = $input.item.json;\n\n// 2. Extract variables safely with proper fallbacks\nconst userMessage = item.userMessage || item.message || (item.article ? \"Summarize this article and send to my email\" : \"\");\nconst userContent = item.userContent || item.article || \"\";\nconst conversationHistory = item.conversationHistory || [];\nconst requestBody = item || {};\nconst userEmail = requestBody.email || requestBody.email_to || 'faisalmrasul13@gmail.com';\nconst sessionId = requestBody.sessionId || requestBody.session_id || 'session_' + Math.random().toString(36).substr(2, 9);\n// 2. Validate required fields (using standard n8n error handling or fallback)\nif (!userMessage || userMessage.trim() === '') {\n    throw new Error('Message field is required');\n}\n\n// 3. Process the history array safely\nconst trimmedHistory = Array.isArray(conversationHistory) ? conversationHistory.slice(-10) : [];\n\n// 4. Construct the output object\nconst outputData = {\n    userMessage: userMessage,\n    userContent: userContent,\n    sessionId: sessionId,\n    userEmail: userEmail,\n    conversationHistory: trimmedHistory,\n    timestamp: new Date().toISOString(),\n    requestId: `req_${Date.now()}_${Math.floor(Math.random() * 1000000)}`\n};\n\n// 5. Return the array of objects for n8n\nreturn [{ json: outputData }];"
+      },
+      "id": "5be1735e-de55-4408-ac09-2aa833dfef43",
+      "name": "Validate & Extract Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst wordCount = data.userMessage.split(' ').length;\nconst hasContent = data.userContent && data.userContent.length > 0;\nconst complexity = wordCount > 50 ? 'high' : wordCount > 20 ? 'medium' : 'low';\n\nconst needsMultiStep = data.userMessage.toLowerCase().includes('compare') ||\n                      data.userMessage.toLowerCase().includes('analyze') ||\n                      data.userMessage.toLowerCase().includes('research') ||\n                      wordCount > 100;\n\nconst executionPlan = {\n  complexity: complexity,\n  needsMultiStep: needsMultiStep,\n  estimatedTokens: hasContent ? data.userContent.length / 4 : 500,\n  steps: needsMultiStep ? ['analyze', 'generate', 'validate'] : ['process']\n};\n\nreturn [{\n  json: {\n    ...data,\n    complexity,\n    needsMultiStep,\n    executionPlan,\n    agentState: 'planning_complete'\n  }\n}];"
+      },
+      "id": "e7b6a0a1-4940-4ef9-82e8-7b0e45423306",
+      "name": "Agentic Planning Layer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.1,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an intelligent router. Analyze the user request and determine the best agent to handle it. You must return a JSON object with two keys: 'agent_target' (the path key) and 'agent_name' (the display name). Example: {'agent_target': 'summarization', 'agent_name': 'Summarization Agent'}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.userMessage }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "66308dd3-25d4-4276-bee6-e0aba31151de",
+      "name": "Intelligent Agent Router",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -656,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the incoming item from the Intelligent Agent Router\nconst incomingItem = $input.item;\n\ntry {\n  // Extract the stringified JSON from Groq's response structure\n  const rawContent = incomingItem.json.choices[0].message.content;\n  \n  // Parse it into a real JavaScript object\n  const parsedData = JSON.parse(rawContent);\n\n  // Return the data cleanly for downstream nodes\n  return {\n    json: {\n      agent_target: parsedData.agent_target,\n      agent_name: parsedData.agent_name,\n      // Pass along the initial user info so it isn't lost\n      userMessage: $('Agentic Planning Layer').item.json.userMessage,\n      userEmail: $('Agentic Planning Layer').item.json.userEmail\n    }\n  };\n\n} catch (error) {\n  // Fallback if parsing fails for any reason\n  return {\n    json: {\n      agent_target: \"clarification\",\n      agent_name: \"Clarification Agent\",\n      error: \"Failed to parse router decision: \" + error.message\n    }\n  };\n}"
+      },
+      "id": "c462beba-2ebf-468f-8af0-85bdffa40ccd",
+      "name": "Parse Agent Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "20c390e4-577a-494d-a786-0ba633658362",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "summarization",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "5519b5ac-53fb-4763-be89-0590f9c0df9b",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "content_creation",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "1ec2085c-e12d-4b6e-9899-27247e9e9111",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "content_improvement",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "6a6647c9-a6f2-4795-8948-324f48613440",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "research",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "c0eda027-5caa-4537-b5d0-ad2577938987",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "analytics",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "98fc3dea-7d78-4188-af76-d5327d508ab2",
+                    "leftValue": "={{ $json.agent_target }}",
+                    "rightValue": "general_assistant",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fdc7512f-ecf7-4d69-b14a-bc2df4774657",
+      "name": "Route to Specialized Agent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -224,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.3,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a professional Summarization Agent. Provide a clear, concise, and structured summary of the text provided by the user.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(\"Please summarize this text: \" + ($('Validate & Extract Email').item.json.userContent || $('Webhook Trigger').item.json.article)) }}\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "9feacb1d-978a-4a8b-bb0b-d14534feecb2",
+      "name": "Summarization Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.7,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a professional Content Creation Agent. Use the user's instructions to draft high-quality marketing copy, articles, or social posts based on the text provided.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Please generate content based on this request: {{ $('Agentic Planning Layer').item.json.userMessage }} \\n\\nUsing this source text: {{ $('Agentic Planning Layer').item.json.userContent }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "8aa0279c-2e34-4e07-be54-d5cf42121fe1",
+      "name": "Content Creation Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.5,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a professional Content Improvement Agent. Rewrite, polish, or optimize the provided text for clarity, tone, and impact based on the user's instructions.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Improvement Instructions: {{ $('Agentic Planning Layer').item.json.userMessage }} \\n\\nSource text to improve: {{ $('Agentic Planning Layer').item.json.userContent }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "6d86ffb9-8413-4fe5-ab40-65f4f3e97903",
+      "name": "Content Improvement Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        320
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.2,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a deep-dive Research Agent. Analyze the provided source context thoroughly to extract data points, cross-references, and background insight matching the user's inquiry.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Research Request: {{ $('Agentic Planning Layer').item.json.userMessage }} \\n\\nSource context: {{ $('Agentic Planning Layer').item.json.userContent }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "id": "c7f37a9d-e780-4459-bdb9-1b8c5a4c460e",
+      "name": "Research Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.1,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an Analytics Agent. Break down the provided data or text context into core logical elements, trends, metrics, or structured takeaways.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analysis Request: {{ $('Agentic Planning Layer').item.json.userMessage }} \\n\\nTarget Text/Data: {{ $('Agentic Planning Layer').item.json.userContent }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "47099e7e-bbcc-4075-a533-50b475f57812",
+      "name": "Analytics Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        640
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"temperature\": 0.7,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a helpful, versatile AI Assistant. Address the user's general prompt using any context provided.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"User Message: {{ $('Agentic Planning Layer').item.json.userMessage }} \\n\\nOptional Context: {{ $('Agentic Planning Layer').item.json.userContent }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "45c6dfa6-acab-4c48-8196-f07c4be56466",
+      "name": "General Assistant Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        800
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8fsH4f8swdM2zTvY",
+          "name": "Header Auth account"
+        },
+        "groqApi": {
+          "id": "q5e2i7QWqDt40fFo",
+          "name": "Groq account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst clarifyMessage = `I need a bit more information to help you best:\n\nPlease clarify:\n1. What would you like me to do? (summarize / create post / improve / research / analyze)\n2. Do you have content to share?\n3. Any platform preference? (LinkedIn, Twitter, Instagram, Email)\n\nExample: \"Summarize this article about AI\" or \"Write a LinkedIn post about remote work\"`;\n\nreturn [{\n  json: {\n    ...data,\n    agent_response: clarifyMessage,\n    tool_used: 'CLARIFICATION'\n  }\n}];"
+      },
+      "id": "e9bc5eaf-0c62-40a0-a508-91054936f956",
+      "name": "Clarification Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==========================================\n// 1. EXTRACT DATA & CREATE CONTEXT FALLBACKS\n// ==========================================\n// Safely fetch data from the Decision Layer\nlet ctx = {};\ntry {\n  ctx = $('Parse Agent Decision').first().json || {};\n} catch (e) {\n  ctx = {};\n}\n\n// Safely pull routing variables\nconst tool = ctx.tool || 'SUMMARIZE';\n\nconst toolNodeMap = {\n  SUMMARIZE: 'Summarization Agent',\n  GENERATE_POST: 'Content Creation Agent',\n  IMPROVE: 'Content Improvement Agent',\n  RESEARCH: 'Research Agent',\n  ANALYZE: 'Analytics Agent',\n  ANSWER: 'General Assistant Agent',\n  CLARIFY: 'Clarification Agent'\n};\n\nlet agentOutput = '';\nlet agentError = false;\n\n// ==========================================\n// 2. AGENT ROUTING & RESPONSE EXTRACTION\n// ==========================================\nif (tool === 'CLARIFY') {\n  try {\n    const clarifyData = $('Clarification Agent').first().json;\n    agentOutput = clarifyData.agent_response || clarifyData.output || '';\n  } catch(e) {\n    agentOutput = 'Please provide more details so I can help you better.';\n  }\n} else {\n  const nodeName = toolNodeMap[tool] || 'Summarization Agent';\n  try {\n    const nodeData = $(nodeName).first().json;\n    if (nodeData.error) {\n      agentOutput = `Error with ${tool} agent: ${nodeData.error.message || 'Unknown error'}. Please try again.`;\n      agentError = true;\n    } else {\n      // Safely checks Groq choices format, falling back to a direct text response property\n      agentOutput = nodeData.choices?.[0]?.message?.content || nodeData.agent_response || nodeData.output || 'No response generated.';\n    }\n  } catch(e) {\n    agentOutput = 'An unexpected error occurred while compiling the agent summary. Please try again.';\n    agentError = true;\n  }\n}\n\n// ==========================================\n// 3. SECURE DISPLAY VARIABLES (NO MORE UNDEFINED)\n// ==========================================\nconst displayAgentName = toolNodeMap[tool] || 'Summarization Agent';\nconst displayPlatform = ctx.platform || 'General AI Pipeline';\nconst displayConfidence = ctx.confidence || '100';\nconst displaySessionId = ctx.sessionId || ctx.session_id || 'session_active';\nconst displayTone = ctx.tone || 'Professional';\nconst displayReasoning = ctx.reasoning || 'Direct processing';\nconst displayUserMessage = ctx.userMessage || 'Summarize this article';\nconst displayUserEmail = ctx.userEmail || 'faisalmrasul13@gmail.com';\n\n// ==========================================\n// 4. GENERATE RICH HTML EMAIL TEMPLATE\n// ==========================================\nconst htmlEmail = `<!DOCTYPE html>\n<html>\n<head><meta charset=\"UTF-8\"><title>AI Agent Response</title>\n<style>\nbody { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 700px; margin: auto; }\n.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }\n.content { background: #f7f9fc; padding: 30px; border-radius: 0 0 10px 10px; }\n.agent-info { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; border-left: 4px solid #667eea; }\n.response { background: white; padding: 20px; border-radius: 10px; white-space: pre-wrap; }\n.confidence-bar { background: #e2e8f0; height: 8px; border-radius: 4px; margin-top: 5px; }\n.confidence-fill { background: #48bb78; height: 100%; width: ${displayConfidence}%; border-radius: 4px; }\n</style>\n</head>\n<body>\n<div class=\"header\">\n<h1>🤖 Advanced AI Agent</h1>\n<p>Your intelligent content assistant</p>\n</div>\n<div class=\"content\">\n<div class=\"agent-info\">\n<p><strong>🎯 Agent Used:</strong> ${displayAgentName}</p>\n<p><strong>📱 Platform:</strong> ${displayPlatform}</p>\n<p><strong>🎨 Tone:</strong> ${displayTone}</p>\n<p><strong>📊 Confidence:</strong> ${displayConfidence}%</p>\n<div class=\"confidence-bar\"><div class=\"confidence-fill\"></div></div>\n<p><strong>💭 Reasoning:</strong> ${displayReasoning}</p>\n<p><strong>🆔 Session:</strong> ${displaySessionId}</p>\n</div>\n<h2>📄 Response</h2>\n<div class=\"response\">${agentOutput.replace(/\\n/g, '<br>')}</div>\n<p style=\"margin-top: 20px; font-size: 12px; color: #666;\">Generated by Advanced AI Agent v4.0 | Powered by Groq</p>\n</div>\n</body>\n</html>`;\n\n// ==========================================\n// 5. GENERATE CLEAN PLAIN TEXT EMAIL TEMPLATE\n// ==========================================\nconst plainTextEmail = `ADVANCED AI AGENT RESPONSE\n===========================================\nAgent: ${displayAgentName}\nPlatform: ${displayPlatform}\nConfidence: ${displayConfidence}%\nSession: ${displaySessionId}\n\nRESPONSE:\n${agentOutput}\n\n---\nYour request: ${displayUserMessage}`;\n\n// ==========================================\n// 6. RETURN UNIFIED DATA TO GMAIL NODE\n// ==========================================\nreturn [{\n    json: {\n        success: !agentError,\n        agent_response: agentOutput,\n        output: agentOutput, \n        agent_name: displayAgentName,\n        platform: displayPlatform,\n        confidence: displayConfidence,\n        session_id: displaySessionId,\n        session: displaySessionId,\n        tool_used: tool,\n        reasoning: displayReasoning,\n        tone: displayTone,\n        userEmail: displayUserEmail,\n        userMessage: displayUserMessage,\n        timestamp: new Date().toISOString(),\n        htmlEmail: htmlEmail,\n        plainTextEmail: plainTextEmail,\n        emailSubject: `[AI Agent] Your ${displayAgentName} results are ready!`,\n        meta: { model: 'llama-3.3-70b-versatile', provider: 'Groq' },\n        version: '4.0'\n    }\n}];"
+      },
+      "id": "72ba3d7d-2774-4092-b56a-beb67826d58a",
+      "name": "Assemble Email Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"message\": \"Your summary has been successfully generated and sent to your email.\"\n}",
+        "options": {}
+      },
+      "id": "70db0d99-85a8-4376-99a6-fd922b4428bd",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.userEmail }}",
+        "subject": "={{ $json.emailSubject }}",
+        "emailType": "text",
+        "message": "={{ $json.plainTextEmail }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        656,
+        544
+      ],
+      "id": "59cfd70d-9bb1-4b8b-b90e-fded6b843c46",
+      "name": "Send a message",
+      "webhookId": "42ea64d0-4946-4288-a8be-d20030cdf887",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "D6ZSXCeaiJj4UilF",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Webhook Trigger": [
+      {
+        "json": {
+          "article": "Title: The Evolution and Impact of Artificial Intelligence: Shaping Tomorrow's World \r\n\r\nArtificial Intelligence (AI) has emerged as one of the most transformative technologies of the 21st century. From powering virtual assistants in our smartphones to driving breakthroughs in medicine and climate science, AI is no longer a futuristic concept but a pervasive force reshaping industries, societies, and daily life. As we stand in 2026, AI's rapid advancement raises profound questions about its potential, risks, and the ethical frameworks needed to guide it. This article explores the history, mechanics, applications, challenges, and future of artificial intelligence, highlighting why it represents both humanity's greatest opportunity and a critical responsibility.\r\n\r\n### A Brief History of AI\r\n\r\nThe dream of creating intelligent machines dates back centuries, but the formal field of AI began in the mid-20th century. In 1950, British mathematician Alan Turing published his seminal paper \"Computing Machinery and Intelligence,\" proposing the Turing Test as a measure of machine intelligence. Just six years later, in 1956, the Dartmouth Conference—organized by John McCarthy, Marvin Minsky, Nathaniel Rochester, and Claude Shannon—coined the term \"artificial intelligence\" and laid the groundwork for the discipline.\r\n\r\nThe early years were marked by optimism and significant progress. Programs like the Logic Theorist (1956) by Allen Newell and Herbert Simon proved machines could solve mathematical problems. However, the field soon encountered \"AI winters\"—periods of reduced funding and interest due to overhyped expectations and technical limitations. The 1970s and 1980s saw expert systems rise, which used rule-based reasoning for specific domains like medical diagnosis. Yet, these systems struggled with the complexity and ambiguity of real-world data.\r\n\r\nA renaissance began in the 1990s and accelerated in the 2010s, fueled by three key ingredients: massive increases in computational power (thanks to GPUs and cloud computing), the explosion of big data from the internet, and breakthroughs in machine learning algorithms. Deep learning, particularly convolutional neural networks (CNNs) and recurrent neural networks (RNNs), enabled machines to excel at tasks like image recognition and natural language processing. Milestones include IBM's Deep Blue defeating chess champion Garry Kasparov in 1997, Google's AlphaGo beating world Go champion Lee Sedol in 2016, and the launch of transformer-based models like GPT series, which revolutionized generative AI.\r\n\r\nBy the mid-2020s, AI has evolved from narrow, task-specific systems to more general capabilities. Models like those powering multimodal systems can process text, images, video, and audio simultaneously, marking a shift toward artificial general intelligence (AGI) research.\r\n\r\n### How Artificial Intelligence Works\r\n\r\nAt its core, AI refers to machines or software that perform tasks requiring human-like intelligence, such as learning, reasoning, problem-solving, perception, and creativity. Modern AI primarily relies on machine learning (ML), where systems improve through experience rather than explicit programming.\r\n\r\nSupervised learning trains models on labeled data—for example, showing thousands of cat images labeled \"cat\" so the system learns to identify them. Unsupervised learning finds patterns in unlabeled data, useful for clustering customers in marketing. Reinforcement learning, inspired by behavioral psychology, rewards models for desired actions, as seen in autonomous vehicles learning to navigate traffic.\r\n\r\nDeep learning, a subset of ML, uses artificial neural networks with multiple layers (hence \"deep\"). These networks mimic the human brain's neurons and synapses. A transformer architecture, introduced in the 2017 paper \"Attention Is All You Need,\" underpins today's large language models (LLMs). Transformers excel at handling sequential data through self-attention mechanisms, allowing them to weigh the importance of different words in a sentence regardless of distance.\r\n\r\nTraining these models requires enormous resources. GPT-4 and its successors were trained on trillions of tokens from diverse sources, consuming vast electricity equivalent to small cities. Inference—the process of using a trained model—has become more efficient through techniques like quantization and distillation, making AI accessible on consumer devices.\r\n\r\nGenerative AI, a standout category, creates new content: text (ChatGPT), images (DALL-E, Midjourney, Grok Imagine), music, and even code. These systems learn statistical patterns from training data and generate plausible outputs, though they can \"hallucinate\" inaccuracies.\r\n\r\n### Current Applications and Transformative Impact\r\n\r\nAI's integration into society is profound. In healthcare, algorithms detect cancers in medical scans with accuracy rivaling or surpassing radiologists. Predictive models forecast disease outbreaks, and personalized medicine tailors treatments based on genetic data. During the COVID-19 pandemic, AI accelerated vaccine development by analyzing protein structures.\r\n\r\nIn transportation, autonomous vehicles from companies like Waymo and Tesla use computer vision, LiDAR, and reinforcement learning to navigate complex environments, promising safer roads and reduced emissions. Finance employs AI for fraud detection, algorithmic trading, and credit scoring, processing millions of transactions in seconds.\r\n\r\nEducation benefits from adaptive learning platforms that personalize curricula to individual student needs. Agriculture uses AI-powered drones and sensors for precision farming, optimizing water and fertilizer use to combat food insecurity. Creative industries leverage generative tools for scriptwriting, graphic design, and music composition, democratizing creativity while sparking debates about authorship.\r\n\r\nBusiness operations have been revolutionized by AI-driven automation. Customer service chatbots handle routine queries 24/7, while predictive analytics optimize supply chains. In 2026, AI agents—autonomous systems that plan and execute multi-step tasks—are entering mainstream workflows, from coding assistants to virtual researchers.\r\n\r\nEnvironmentally, AI models climate change scenarios with greater precision, aiding in renewable energy optimization and biodiversity monitoring. Yet, the technology's own carbon footprint from training runs remains a concern, prompting research into \"green AI.\"\r\n\r\n### Benefits, Challenges, and Ethical Dilemmas\r\n\r\nThe benefits are immense: increased productivity, scientific acceleration, and solutions to intractable problems. Economists estimate AI could add trillions to global GDP by 2030. It augments human capabilities, freeing people from mundane tasks for higher-value work.\r\n\r\nHowever, challenges abound. Job displacement is a pressing issue; roles in manufacturing, customer service, and even creative fields face automation. While new jobs in AI maintenance and ethics emerge, reskilling workforces is essential. Bias in AI systems—stemming from skewed training data—perpetuates societal inequalities, as seen in facial recognition errors disproportionately affecting minorities.\r\n\r\nPrivacy concerns arise from AI's data hunger. Surveillance capitalism, deepfakes, and AI-generated misinformation threaten democracy and trust. Cybersecurity risks grow as sophisticated models enable advanced cyberattacks or autonomous weapons.\r\n\r\nEthically, questions of accountability persist: Who is responsible when an AI-driven car crashes? Should AI have rights as it approaches AGI? Transparency and explainability (\"black box\" problem) are critical for high-stakes applications like criminal justice or healthcare. International governance lags; efforts like the EU AI Act and global summits aim to establish standards, but enforcement varies.\r\n\r\nPhilosophically, AI forces us to reconsider human uniqueness. If machines can create art or pass advanced reasoning tests, what defines consciousness or creativity? Alignment—ensuring AI goals match human values—remains an open research challenge, especially as systems grow more powerful.\r\n\r\n### The Future of Artificial Intelligence\r\n\r\nLooking ahead, several trends dominate. Multimodal and embodied AI will integrate senses and physical interaction, leading to advanced robotics. AGI, capable of outperforming humans across most tasks, could arrive within decades according to some experts, though timelines vary widely. Superintelligence, surpassing human cognition, raises existential questions addressed by organizations like OpenAI, Anthropic, and xAI.\r\n\r\nPositive scenarios envision AI solving fusion energy, curing diseases, and mitigating climate change. Collaborative human-AI systems could usher in an era of abundance. Risks include uncontrolled AI pursuing misaligned goals or concentration of power in few tech giants.\r\n\r\nRegulation, education, and open research will shape outcomes. Initiatives promoting AI literacy, ethical design, and international cooperation are vital. Public-private partnerships can balance innovation with safety.\r\n\r\n### Conclusion\r\n\r\nArtificial Intelligence stands at the crossroads of promise and peril. It amplifies human ingenuity, offering tools to address humanity's greatest challenges. Yet, without thoughtful stewardship, it risks amplifying existing inequalities or introducing new threats. As we develop ever-more-capable systems, the focus must remain on beneficial AI that augments rather than replaces human potential.\r\n\r\nThe journey of AI mirrors humanity's own evolution: curiosity-driven, innovative, and fraught with moral choices. By prioritizing transparency, equity, and alignment, we can harness this technology to build a more prosperous, sustainable, and enlightened future. The question is not whether AI will transform the world, but how we choose to guide that transformation. \r\n"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate & Extract Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Extract Email": {
+      "main": [
+        [
+          {
+            "node": "Agentic Planning Layer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agentic Planning Layer": {
+      "main": [
+        [
+          {
+            "node": "Intelligent Agent Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intelligent Agent Router": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Decision": {
+      "main": [
+        [
+          {
+            "node": "Route to Specialized Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to Specialized Agent": {
+      "main": [
+        [
+          {
+            "node": "Summarization Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Content Creation Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Content Improvement Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Research Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Analytics Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clarification Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarization Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Content Creation Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Content Improvement Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analytics Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "General Assistant Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clarification Agent": {
+      "main": [
+        [
+          {
+            "node": "Assemble Email Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Email Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Response": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "b8ba8870-6f4d-48c2-835a-3cd3185425de",
+  "meta": {
+    "instanceId": "6df540e8dc9fed0123529be8d8ac087f4a406d00f7857cb9a7ead0ed628670dd"
+  },
+  "nodeGroups": [],
+  "id": "CaJbdne2cGAxdLOq",
+  "tags": [
+    {
+      "updatedAt": "2026-06-11T06:04:48.624Z",
+      "createdAt": "2026-06-11T06:04:48.624Z",
+      "id": "20RHRmlKCWjfUCh2",
+      "name": "AI Agent"
+    },
+    {
+      "updatedAt": "2026-06-11T10:28:13.191Z",
+      "createdAt": "2026-06-11T10:28:13.191Z",
+      "id": "gn7C0uzqRUSO0DPJ",
+      "name": "Email Delivery"
+    },
+    {
+      "updatedAt": "2026-06-11T06:04:48.606Z",
+      "createdAt": "2026-06-11T06:04:48.606Z",
+      "id": "yOKWF0SVNCJzLnf0",
+      "name": "Groq"
+    }
+  ]
+}
